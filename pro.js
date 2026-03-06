@@ -32,6 +32,7 @@ L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
 let markers = {};
 let polylines = {};
 let trailCoords = [];
+let playerLastSeen = {}; // track last seen time per player
 
 const GRID_SIZE = 0.0001;
 let capturedCells = {};
@@ -41,6 +42,8 @@ const scoreDiv = document.getElementById('score');
 const playerInfoDiv = document.getElementById('playerInfo');
 playerInfoDiv.innerText = `You are: ${playerId} (${playerColor})`;
 playerInfoDiv.style.background = playerColor;
+
+// ─── Helper Functions ──────────────────────────
 
 function getCellKey(lat, lng) {
   const row = Math.floor(lat / GRID_SIZE);
@@ -58,7 +61,6 @@ function getCellBounds(key) {
 
 function captureCell(key) {
   if (capturedCells[key]) {
-    // Enemy cell — steal it!
     if (capturedCells[key].options.fillColor !== playerColor) {
       capturedCells[key].setStyle({
         color: playerColor,
@@ -68,7 +70,6 @@ function captureCell(key) {
       score++;
     }
   } else {
-    // Empty cell — capture it!
     const bounds = getCellBounds(key);
     const rect = L.rectangle(bounds, {
       color: playerColor,
@@ -94,7 +95,44 @@ function captureCell(key) {
   scoreDiv.innerText = `Score: ${score} cells`;
 }
 
-// Listen for all cells
+// ─── Player Status ──────────────────────────
+
+function getTimeAgo(timestamp) {
+  const seconds = Math.floor((Date.now() - timestamp) / 1000);
+  if (seconds < 60) return `${seconds}s ago`;
+  return `${Math.floor(seconds / 60)}m ago`;
+}
+
+function updateMarkerStatus(id, lastSeen) {
+  if (!markers[id]) return;
+  const secondsAgo = (Date.now() - lastSeen) / 1000;
+  const isRunning = secondsAgo < 10;
+
+  // Fade marker if stopped
+  const icon = markers[id].getElement();
+  if (icon) {
+    icon.style.opacity = isRunning ? '1' : '0.4';
+  }
+
+  // Update tooltip with status + last seen
+  const status = isRunning ? '🟢 RUNNING' : '🔴 STOPPED';
+  const timeAgo = getTimeAgo(lastSeen);
+  markers[id].bindTooltip(
+    `${id}<br>${status}<br>Last seen: ${timeAgo}`,
+    { permanent: true, direction: 'top', className: 'player-tooltip' }
+  ).openTooltip();
+}
+
+// Check all player statuses every 5 seconds
+setInterval(() => {
+  Object.keys(playerLastSeen).forEach(id => {
+    if (id === playerId) return;
+    updateMarkerStatus(id, playerLastSeen[id]);
+  });
+}, 5000);
+
+// ─── Firebase Listeners ──────────────────────────
+
 onValue(ref(db, 'cells'), (snapshot) => {
   const data = snapshot.val();
   if (!data) return;
@@ -117,9 +155,9 @@ onValue(ref(db, 'cells'), (snapshot) => {
   });
 });
 
-// Listen for all players
 onValue(ref(db, 'players'), (snapshot) => {
   const data = snapshot.val();
+
   Object.keys(markers).forEach(id => {
     if (id === playerId) return;
     if (!data || !data[id]) {
@@ -127,11 +165,18 @@ onValue(ref(db, 'players'), (snapshot) => {
       map.removeLayer(polylines[id]);
       delete markers[id];
       delete polylines[id];
+      delete playerLastSeen[id];
     }
   });
+
   if (!data) return;
+
   Object.entries(data).forEach(([id, player]) => {
     if (id === playerId) return;
+
+    // Track last seen
+    playerLastSeen[id] = player.lastSeen || Date.now();
+
     if (!markers[id]) {
       markers[id] = L.marker([player.lat, player.lng]).addTo(map);
       polylines[id] = L.polyline([], {
@@ -142,10 +187,14 @@ onValue(ref(db, 'players'), (snapshot) => {
     } else {
       markers[id].setLatLng([player.lat, player.lng]);
     }
+
+    // Update status immediately on position change
+    updateMarkerStatus(id, playerLastSeen[id]);
   });
 });
 
-// GPS Tracking
+// ─── GPS Tracking ────────────────────────────────
+
 navigator.geolocation.watchPosition(
   (position) => {
     const { latitude, longitude } = position.coords;
@@ -164,10 +213,12 @@ navigator.geolocation.watchPosition(
       map.panTo([latitude, longitude]);
     }
 
+    // Save position + timestamp to Firebase
     set(ref(db, `players/${playerId}`), {
       lat: latitude,
       lng: longitude,
-      color: playerColor
+      color: playerColor,
+      lastSeen: Date.now()
     });
 
     trailCoords.push([latitude, longitude]);
