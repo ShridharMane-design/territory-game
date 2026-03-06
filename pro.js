@@ -1,5 +1,5 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
-import { getDatabase, ref, set, onValue } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
+import { getDatabase, ref, set, onValue, remove, onDisconnect } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
 
 // Firebase config
 const firebaseConfig = {
@@ -16,10 +16,17 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const db = getDatabase(app);
 
-// Player setup
+// Player setup — permanent ID per phone
+const playerId = localStorage.getItem('playerId') || 'player_' + Math.floor(Math.random() * 10000);
+localStorage.setItem('playerId', playerId);
+
 const COLORS = ['blue', 'red', 'green', 'orange'];
-const playerId = 'player_' + Math.floor(Math.random() * 10000);
-let playerColor = COLORS[Math.floor(Math.random() * COLORS.length)];
+const colorIndex = parseInt(playerId.split('_')[1]) % COLORS.length;
+let playerColor = COLORS[colorIndex];
+
+// Auto remove player when they close the app
+const playerRef = ref(db, `players/${playerId}`);
+onDisconnect(playerRef).remove();
 
 // Map setup
 const map = L.map('map').setView([0, 0], 18);
@@ -78,6 +85,18 @@ onValue(ref(db, 'cells'), (snapshot) => {
 // Listen for all players positions
 onValue(ref(db, 'players'), (snapshot) => {
   const data = snapshot.val();
+
+  // Remove markers for players no longer in database
+  Object.keys(markers).forEach(id => {
+    if (id === playerId) return;
+    if (!data || !data[id]) {
+      map.removeLayer(markers[id]);
+      map.removeLayer(polylines[id]);
+      delete markers[id];
+      delete polylines[id];
+    }
+  });
+
   if (!data) return;
   Object.entries(data).forEach(([id, player]) => {
     if (id === playerId) return;
