@@ -24,7 +24,7 @@ let playerColor = COLORS[colorIndex];
 const playerRef = ref(db, `players/${playerId}`);
 onDisconnect(playerRef).remove();
 
-const map = L.map('map').setView([0, 0], 18);
+const map = L.map('map').setView([0, 0], 17);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
   attribution: '© OpenStreetMap contributors'
 }).addTo(map);
@@ -218,7 +218,6 @@ function fillEnclosedArea(loopPath) {
   score += captured;
   updateLeaderboard();
 
-  // Show loop done message then revert to score
   scoreDiv.innerText = `✅ Loop done! +${captured} cells! Total: ${score}`;
   setTimeout(() => {
     scoreDiv.innerText = `Score: ${score} cells`;
@@ -236,7 +235,6 @@ onValue(ref(db, 'cells'), (snapshot) => {
       const wasMyCell = capturedCells[key].options.fillColor === playerColor;
       const nowEnemyCell = cell.color !== playerColor;
 
-      // Enemy stole my cell — increase their leaderboard score
       if (wasMyCell && nowEnemyCell && cell.owner && cell.owner !== playerId) {
         get(ref(db, `leaderboard/${cell.owner}`)).then(snap => {
           const current = snap.val();
@@ -283,7 +281,11 @@ onValue(ref(db, 'players'), (snapshot) => {
     if (id === playerId) return;
     if (!markers[id]) {
       markers[id] = L.marker([player.lat, player.lng]).addTo(map);
-      polylines[id] = L.polyline([], { color: player.color }).addTo(map);
+      polylines[id] = L.polyline([], { 
+        color: player.color,
+        weight: 4,
+        opacity: 1
+      }).addTo(map);
     } else {
       markers[id].setLatLng([player.lat, player.lng]);
     }
@@ -298,12 +300,18 @@ navigator.geolocation.watchPosition(
     const key = getCellKey(latitude, longitude);
 
     if (!markers[playerId]) {
-      map.setView([latitude, longitude], 18);
       markers[playerId] = L.marker([latitude, longitude]).addTo(map);
-      polylines[playerId] = L.polyline([], { color: playerColor }).addTo(map);
+      polylines[playerId] = L.polyline([], {
+        color: playerColor,
+        weight: 4,
+        opacity: 1
+      }).addTo(map);
     } else {
       markers[playerId].setLatLng([latitude, longitude]);
     }
+
+    // Map always follows player at zoom 17
+    map.setView([latitude, longitude], 17);
 
     set(ref(db, `players/${playerId}`), {
       lat: latitude,
