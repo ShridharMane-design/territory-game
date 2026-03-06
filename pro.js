@@ -39,8 +39,8 @@ let markers = {};
 let polylines = {};
 
 // Trail tracking
-let trailCoords = []; // full path
-let enemyTrail = []; // path inside enemy territory
+let trailCoords = [];
+let enemyTrail = [];
 let inEnemyTerritory = false;
 
 // Grid settings
@@ -80,19 +80,16 @@ function getDistance(lat1, lng1, lat2, lng2) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
 }
 
-// Check if a cell belongs to current player
 function isMyCell(key) {
   if (!capturedCells[key]) return false;
   return capturedCells[key].options.fillColor === playerColor;
 }
 
-// Check if a cell belongs to enemy
 function isEnemyCell(key) {
   if (!capturedCells[key]) return false;
   return capturedCells[key].options.fillColor !== playerColor;
 }
 
-// Ray casting — check if point is inside polygon
 function isPointInPolygon(lat, lng, polygon) {
   let inside = false;
   for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
@@ -105,7 +102,42 @@ function isPointInPolygon(lat, lng, polygon) {
   return inside;
 }
 
-// Capture or steal a single cell
+// ─── Self Intersection Detection ──────────────────────────
+
+function direction(pi, pj, pk) {
+  return (pk[0] - pi[0]) * (pj[1] - pi[1]) -
+         (pj[0] - pi[0]) * (pk[1] - pi[1]);
+}
+
+function segmentsIntersect(p1, p2, p3, p4) {
+  const d1 = direction(p3, p4, p1);
+  const d2 = direction(p3, p4, p2);
+  const d3 = direction(p1, p2, p3);
+  const d4 = direction(p1, p2, p4);
+  if (((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) &&
+      ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))) {
+    return true;
+  }
+  return false;
+}
+
+function detectSelfIntersection(trail) {
+  if (trail.length < 4) return false;
+  const last = trail[trail.length - 1];
+  const prev = trail[trail.length - 2];
+  // Check last segment against all earlier segments except adjacent
+  for (let i = 0; i < trail.length - 3; i++) {
+    const a = trail[i];
+    const b = trail[i + 1];
+    if (segmentsIntersect(prev, last, a, b)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// ─── Cell Capture ──────────────────────────
+
 function captureCell(key) {
   const existingCell = capturedCells[key];
 
@@ -132,7 +164,6 @@ function captureCell(key) {
   scoreDiv.innerText = `Score: ${score} cells`;
 }
 
-// Fill entire enclosed area from enemy trail
 function fillEnclosedArea(loopPath) {
   if (loopPath.length < 3) return;
 
@@ -158,8 +189,7 @@ function fillEnclosedArea(loopPath) {
   }
 
   if (captured > 0) {
-    // Flash effect to show territory captured
-    scoreDiv.innerText = `+${captured} cells stolen! Total: ${score}`;
+    scoreDiv.innerText = `+${captured} cells captured! Total: ${score}`;
     setTimeout(() => {
       scoreDiv.innerText = `Score: ${score} cells`;
     }, 2000);
@@ -168,7 +198,6 @@ function fillEnclosedArea(loopPath) {
 
 // ─── Firebase Listeners ──────────────────────────
 
-// Listen for territory updates
 onValue(ref(db, 'cells'), (snapshot) => {
   const data = snapshot.val();
   if (!data) return;
@@ -191,7 +220,6 @@ onValue(ref(db, 'cells'), (snapshot) => {
   });
 });
 
-// Listen for player positions
 onValue(ref(db, 'players'), (snapshot) => {
   const data = snapshot.val();
 
@@ -224,7 +252,6 @@ navigator.geolocation.watchPosition(
     const { latitude, longitude } = position.coords;
     const key = getCellKey(latitude, longitude);
 
-    // Initialize marker
     if (!markers[playerId]) {
       map.setView([latitude, longitude], 18);
       markers[playerId] = L.marker([latitude, longitude]).addTo(map);
@@ -233,11 +260,9 @@ navigator.geolocation.watchPosition(
       markers[playerId].setLatLng([latitude, longitude]);
     }
 
-    // Update trail
     trailCoords.push([latitude, longitude]);
     polylines[playerId].setLatLngs(trailCoords);
 
-    // Update Firebase position
     set(ref(db, `players/${playerId}`), {
       lat: latitude,
       lng: longitude,
@@ -246,40 +271,55 @@ navigator.geolocation.watchPosition(
 
     // ── Core Loop Logic ──
 
-    if (isMyCell(key)) {
-      // Player is in their OWN territory
-
-      if (inEnemyTerritory && enemyTrail.length > 3) {
-        // Just returned home after being in enemy territory!
-        // Close the loop and fill the enclosed area!
-        enemyTrail.push([latitude, longitude]);
-        fillEnclosedArea(enemyTrail);
-
-        // Reset enemy trail
-        enemyTrail = [];
-        inEnemyTerritory = false;
-      } else {
-        // Normal movement in own territory
-        inEnemyTerritory = false;
-        enemyTrail = [];
-        captureCell(key);
-      }
-
-    } else if (isEnemyCell(key)) {
-      // Player entered ENEMY territory!
+    if (isEnemyCell(key) || (inEnemyTerritory && !isMyCell(key))) {
+      // In enemy or neutral territory while on enemy run
       if (!inEnemyTerritory) {
         inEnemyTerritory = true;
-        enemyTrail = [];
-      }
-      // Track path inside enemy territory
-      enemyTrail.push([latitude, longitude]);
-
-    } else {
-      // Empty cell — just capture it
-      if (!inEnemyTerritory) {
-        captureCell(key);
+        enemyTrail = [[latitude, longitude]];
       } else {
         enemyTrail.push([latitude, longitude]);
+
+        // Method 1 — Self intersection detected → fill loop instantly!
+        if (enemyTrail.length > 10 && detectSelfIntersection(enemyTrail)) {
+          fillEnclosedArea(enemyTrail);
+          enemyTrail = [];
+          inEnemyTerritory = false;
+        }
+
+        // Method 2 — Close to start of enemy trail → fill loop!
+        if (enemyTrail.length > 10) {
+          const distToStart = getDistance(
+            latitude, longitude,
+            enemyTrail[0][0], enemyTrail[0][1]
+          );
+          if (distToStart < 15) {
+            fillEnclosedArea(enemyTrail);
+            enemyTrail = [];
+            inEnemyTerritory = false;
+          }
+        }
+      }
+
+    } else if (isMyCell(key)) {
+      // Back in own territory
+      if (inEnemyTerritory && enemyTrail.length > 5) {
+        // Method 3 — Returned to own territory → fill loop!
+        enemyTrail.push([latitude, longitude]);
+        fillEnclosedArea(enemyTrail);
+        enemyTrail = [];
+        inEnemyTerritory = false;
+      } else {
+        inEnemyTerritory = false;
+        enemyTrail = [];
+        captureCell(key);
+      }
+
+    } else {
+      // Empty cell
+      if (inEnemyTerritory) {
+        enemyTrail.push([latitude, longitude]);
+      } else {
+        captureCell(key);
       }
     }
   },
