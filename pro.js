@@ -90,9 +90,12 @@ function isEnemyCell(key) {
   return capturedCells[key].options.fillColor !== playerColor;
 }
 
+// ─── Polygon Fill ──────────────────────────
+
 function isPointInPolygon(lat, lng, polygon) {
   let inside = false;
-  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+  const n = polygon.length;
+  for (let i = 0, j = n - 1; i < n; j = i++) {
     const xi = polygon[i][0], yi = polygon[i][1];
     const xj = polygon[j][0], yj = polygon[j][1];
     const intersect = ((yi > lng) !== (yj > lng)) &&
@@ -100,6 +103,68 @@ function isPointInPolygon(lat, lng, polygon) {
     if (intersect) inside = !inside;
   }
   return inside;
+}
+
+function fillEnclosedArea(loopPath) {
+  if (loopPath.length < 3) return;
+
+  // Close the polygon properly
+  const closedPath = [...loopPath];
+  closedPath.push(loopPath[0]);
+
+  const lats = closedPath.map(p => p[0]);
+  const lngs = closedPath.map(p => p[1]);
+  const minLat = Math.min(...lats);
+  const maxLat = Math.max(...lats);
+  const minLng = Math.min(...lngs);
+  const maxLng = Math.max(...lngs);
+
+  let captured = 0;
+
+  for (let lat = minLat; lat <= maxLat; lat += GRID_SIZE) {
+    for (let lng = minLng; lng <= maxLng; lng += GRID_SIZE) {
+      const centerLat = lat + GRID_SIZE / 2;
+      const centerLng = lng + GRID_SIZE / 2;
+
+      if (isPointInPolygon(centerLat, centerLng, closedPath)) {
+        const key = getCellKey(lat, lng);
+
+        // Force draw rectangle visually
+        if (capturedCells[key]) {
+          capturedCells[key].setStyle({
+            color: playerColor,
+            fillColor: playerColor,
+            fillOpacity: 0.5
+          });
+        } else {
+          const bounds = getCellBounds(key);
+          const rect = L.rectangle(bounds, {
+            color: playerColor,
+            fillColor: playerColor,
+            fillOpacity: 0.5,
+            weight: 1
+          }).addTo(map);
+          capturedCells[key] = rect;
+        }
+
+        // Update Firebase
+        set(ref(db, `cells/${key}`), {
+          color: playerColor,
+          owner: playerId
+        });
+
+        score++;
+        captured++;
+      }
+    }
+  }
+
+  if (captured > 0) {
+    scoreDiv.innerText = `+${captured} cells captured! Total: ${score}`;
+    setTimeout(() => {
+      scoreDiv.innerText = `Score: ${score} cells`;
+    }, 2000);
+  }
 }
 
 // ─── Self Intersection Detection ──────────────────────────
@@ -125,7 +190,6 @@ function detectSelfIntersection(trail) {
   if (trail.length < 4) return false;
   const last = trail[trail.length - 1];
   const prev = trail[trail.length - 2];
-  // Check last segment against all earlier segments except adjacent
   for (let i = 0; i < trail.length - 3; i++) {
     const a = trail[i];
     const b = trail[i + 1];
@@ -164,36 +228,14 @@ function captureCell(key) {
   scoreDiv.innerText = `Score: ${score} cells`;
 }
 
-function fillEnclosedArea(loopPath) {
-  if (loopPath.length < 3) return;
+// ─── Loop Completion ──────────────────────────
 
-  const lats = loopPath.map(p => p[0]);
-  const lngs = loopPath.map(p => p[1]);
-  const minLat = Math.min(...lats);
-  const maxLat = Math.max(...lats);
-  const minLng = Math.min(...lngs);
-  const maxLng = Math.max(...lngs);
-
-  let captured = 0;
-
-  for (let lat = minLat; lat <= maxLat; lat += GRID_SIZE) {
-    for (let lng = minLng; lng <= maxLng; lng += GRID_SIZE) {
-      const centerLat = lat + GRID_SIZE / 2;
-      const centerLng = lng + GRID_SIZE / 2;
-      if (isPointInPolygon(centerLat, centerLng, loopPath)) {
-        const key = getCellKey(lat, lng);
-        captureCell(key);
-        captured++;
-      }
-    }
+function completeLoop() {
+  if (enemyTrail.length > 5) {
+    fillEnclosedArea(enemyTrail);
   }
-
-  if (captured > 0) {
-    scoreDiv.innerText = `+${captured} cells captured! Total: ${score}`;
-    setTimeout(() => {
-      scoreDiv.innerText = `Score: ${score} cells`;
-    }, 2000);
-  }
+  enemyTrail = [];
+  inEnemyTerritory = false;
 }
 
 // ─── Firebase Listeners ──────────────────────────
@@ -272,42 +314,32 @@ navigator.geolocation.watchPosition(
     // ── Core Loop Logic ──
 
     if (isEnemyCell(key) || (inEnemyTerritory && !isMyCell(key))) {
-      // In enemy or neutral territory while on enemy run
       if (!inEnemyTerritory) {
         inEnemyTerritory = true;
         enemyTrail = [[latitude, longitude]];
       } else {
         enemyTrail.push([latitude, longitude]);
 
-        // Method 1 — Self intersection detected → fill loop instantly!
+        // Method 1 — Trail crosses itself
         if (enemyTrail.length > 10 && detectSelfIntersection(enemyTrail)) {
-          fillEnclosedArea(enemyTrail);
-          enemyTrail = [];
-          inEnemyTerritory = false;
+          completeLoop();
         }
-
-        // Method 2 — Close to start of enemy trail → fill loop!
-        if (enemyTrail.length > 10) {
+        // Method 2 — Close to start point
+        else if (enemyTrail.length > 10) {
           const distToStart = getDistance(
             latitude, longitude,
             enemyTrail[0][0], enemyTrail[0][1]
           );
           if (distToStart < 15) {
-            fillEnclosedArea(enemyTrail);
-            enemyTrail = [];
-            inEnemyTerritory = false;
+            completeLoop();
           }
         }
       }
 
     } else if (isMyCell(key)) {
-      // Back in own territory
       if (inEnemyTerritory && enemyTrail.length > 5) {
-        // Method 3 — Returned to own territory → fill loop!
         enemyTrail.push([latitude, longitude]);
-        fillEnclosedArea(enemyTrail);
-        enemyTrail = [];
-        inEnemyTerritory = false;
+        completeLoop();
       } else {
         inEnemyTerritory = false;
         enemyTrail = [];
@@ -315,7 +347,6 @@ navigator.geolocation.watchPosition(
       }
 
     } else {
-      // Empty cell
       if (inEnemyTerritory) {
         enemyTrail.push([latitude, longitude]);
       } else {
