@@ -1,5 +1,5 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
-import { getDatabase, ref, set, onValue, remove, onDisconnect } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
+import { getDatabase, ref, set, onValue, onDisconnect } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
 
 // Firebase config
 const firebaseConfig = {
@@ -16,7 +16,7 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const db = getDatabase(app);
 
-// Player setup — permanent ID per phone
+// Player setup
 const playerId = localStorage.getItem('playerId') || 'player_' + Math.floor(Math.random() * 10000);
 localStorage.setItem('playerId', playerId);
 
@@ -24,7 +24,7 @@ const COLORS = ['blue', 'red', 'green', 'orange'];
 const colorIndex = parseInt(playerId.split('_')[1]) % COLORS.length;
 let playerColor = COLORS[colorIndex];
 
-// Auto remove player when they close the app
+// Auto remove player when they close app
 const playerRef = ref(db, `players/${playerId}`);
 onDisconnect(playerRef).remove();
 
@@ -37,7 +37,11 @@ L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
 // Player markers and paths
 let markers = {};
 let polylines = {};
-let pathCoords = [];
+
+// Trail tracking
+let trailCoords = []; // full path
+let enemyTrail = []; // path inside enemy territory
+let inEnemyTerritory = false;
 
 // Grid settings
 const GRID_SIZE = 0.0001;
@@ -48,6 +52,8 @@ const scoreDiv = document.getElementById('score');
 const playerInfoDiv = document.getElementById('playerInfo');
 playerInfoDiv.innerText = `You are: ${playerId} (${playerColor})`;
 playerInfoDiv.style.background = playerColor;
+
+// ─── Helper Functions ──────────────────────────
 
 function getCellKey(lat, lng) {
   const row = Math.floor(lat / GRID_SIZE);
@@ -64,12 +70,115 @@ function getCellBounds(key) {
   return [[lat1, lng1], [lat2, lng2]];
 }
 
-// Listen for all players territory
+function getDistance(lat1, lng1, lat2, lng2) {
+  const R = 6371000;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLng = (lng2 - lng1) * Math.PI / 180;
+  const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+    Math.sin(dLng/2) * Math.sin(dLng/2);
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+
+// Check if a cell belongs to current player
+function isMyCell(key) {
+  if (!capturedCells[key]) return false;
+  return capturedCells[key].options.fillColor === playerColor;
+}
+
+// Check if a cell belongs to enemy
+function isEnemyCell(key) {
+  if (!capturedCells[key]) return false;
+  return capturedCells[key].options.fillColor !== playerColor;
+}
+
+// Ray casting — check if point is inside polygon
+function isPointInPolygon(lat, lng, polygon) {
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const xi = polygon[i][0], yi = polygon[i][1];
+    const xj = polygon[j][0], yj = polygon[j][1];
+    const intersect = ((yi > lng) !== (yj > lng)) &&
+      (lat < (xj - xi) * (lng - yi) / (yj - yi) + xi);
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+// Capture or steal a single cell
+function captureCell(key) {
+  const existingCell = capturedCells[key];
+
+  if (!existingCell) {
+    const bounds = getCellBounds(key);
+    const rect = L.rectangle(bounds, {
+      color: playerColor,
+      fillColor: playerColor,
+      fillOpacity: 0.4,
+      weight: 1
+    }).addTo(map);
+    capturedCells[key] = rect;
+    score++;
+  } else if (existingCell.options.fillColor !== playerColor) {
+    existingCell.setStyle({ color: playerColor, fillColor: playerColor });
+    score++;
+  }
+
+  set(ref(db, `cells/${key}`), {
+    color: playerColor,
+    owner: playerId
+  });
+
+  scoreDiv.innerText = `Score: ${score} cells`;
+}
+
+// Fill entire enclosed area from enemy trail
+function fillEnclosedArea(loopPath) {
+  if (loopPath.length < 3) return;
+
+  const lats = loopPath.map(p => p[0]);
+  const lngs = loopPath.map(p => p[1]);
+  const minLat = Math.min(...lats);
+  const maxLat = Math.max(...lats);
+  const minLng = Math.min(...lngs);
+  const maxLng = Math.max(...lngs);
+
+  let captured = 0;
+
+  for (let lat = minLat; lat <= maxLat; lat += GRID_SIZE) {
+    for (let lng = minLng; lng <= maxLng; lng += GRID_SIZE) {
+      const centerLat = lat + GRID_SIZE / 2;
+      const centerLng = lng + GRID_SIZE / 2;
+      if (isPointInPolygon(centerLat, centerLng, loopPath)) {
+        const key = getCellKey(lat, lng);
+        captureCell(key);
+        captured++;
+      }
+    }
+  }
+
+  if (captured > 0) {
+    // Flash effect to show territory captured
+    scoreDiv.innerText = `+${captured} cells stolen! Total: ${score}`;
+    setTimeout(() => {
+      scoreDiv.innerText = `Score: ${score} cells`;
+    }, 2000);
+  }
+}
+
+// ─── Firebase Listeners ──────────────────────────
+
+// Listen for territory updates
 onValue(ref(db, 'cells'), (snapshot) => {
   const data = snapshot.val();
   if (!data) return;
   Object.entries(data).forEach(([key, cell]) => {
-    if (!capturedCells[key]) {
+    if (capturedCells[key]) {
+      capturedCells[key].setStyle({
+        color: cell.color,
+        fillColor: cell.color
+      });
+    } else {
       const bounds = getCellBounds(key);
       const rect = L.rectangle(bounds, {
         color: cell.color,
@@ -82,11 +191,10 @@ onValue(ref(db, 'cells'), (snapshot) => {
   });
 });
 
-// Listen for all players positions
+// Listen for player positions
 onValue(ref(db, 'players'), (snapshot) => {
   const data = snapshot.val();
 
-  // Remove markers for players no longer in database
   Object.keys(markers).forEach(id => {
     if (id === playerId) return;
     if (!data || !data[id]) {
@@ -109,11 +217,14 @@ onValue(ref(db, 'players'), (snapshot) => {
   });
 });
 
-// Watch own GPS
+// ─── GPS Tracking ────────────────────────────────
+
 navigator.geolocation.watchPosition(
   (position) => {
     const { latitude, longitude } = position.coords;
+    const key = getCellKey(latitude, longitude);
 
+    // Initialize marker
     if (!markers[playerId]) {
       map.setView([latitude, longitude], 18);
       markers[playerId] = L.marker([latitude, longitude]).addTo(map);
@@ -122,29 +233,56 @@ navigator.geolocation.watchPosition(
       markers[playerId].setLatLng([latitude, longitude]);
     }
 
-    pathCoords.push([latitude, longitude]);
-    polylines[playerId].setLatLngs(pathCoords);
+    // Update trail
+    trailCoords.push([latitude, longitude]);
+    polylines[playerId].setLatLngs(trailCoords);
 
-    // Update position in Firebase
+    // Update Firebase position
     set(ref(db, `players/${playerId}`), {
       lat: latitude,
       lng: longitude,
       color: playerColor
     });
 
-    // Capture cell
-    const key = getCellKey(latitude, longitude);
-    if (!capturedCells[key]) {
-      set(ref(db, `cells/${key}`), {
-        color: playerColor,
-        owner: playerId
-      });
-      score++;
-      scoreDiv.innerText = `Score: ${score} cells`;
+    // ── Core Loop Logic ──
+
+    if (isMyCell(key)) {
+      // Player is in their OWN territory
+
+      if (inEnemyTerritory && enemyTrail.length > 3) {
+        // Just returned home after being in enemy territory!
+        // Close the loop and fill the enclosed area!
+        enemyTrail.push([latitude, longitude]);
+        fillEnclosedArea(enemyTrail);
+
+        // Reset enemy trail
+        enemyTrail = [];
+        inEnemyTerritory = false;
+      } else {
+        // Normal movement in own territory
+        inEnemyTerritory = false;
+        enemyTrail = [];
+        captureCell(key);
+      }
+
+    } else if (isEnemyCell(key)) {
+      // Player entered ENEMY territory!
+      if (!inEnemyTerritory) {
+        inEnemyTerritory = true;
+        enemyTrail = [];
+      }
+      // Track path inside enemy territory
+      enemyTrail.push([latitude, longitude]);
+
+    } else {
+      // Empty cell — just capture it
+      if (!inEnemyTerritory) {
+        captureCell(key);
+      } else {
+        enemyTrail.push([latitude, longitude]);
+      }
     }
   },
   (error) => { alert('Location error: ' + error.message); },
   { enableHighAccuracy: true, maximumAge: 0, timeout: 10000 }
 );
-
-
