@@ -1,31 +1,53 @@
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+import { getDatabase, ref, set, onValue } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
+
+// Firebase config
+const firebaseConfig = {
+  apiKey: "AIzaSyA49GTlnp4jDpiGEhXcnFzZYq0l710pcPM",
+  authDomain: "territory-game-be63b.firebaseapp.com",
+  databaseURL: "https://territory-game-be63b-default-rtdb.firebaseio.com",
+  projectId: "territory-game-be63b",
+  storageBucket: "territory-game-be63b.firebasestorage.app",
+  messagingSenderId: "550730239747",
+  appId: "1:550730239747:web:53bd1c6678efd8822d6336"
+};
+
+// Initialize Firebase
+const app = initializeApp(firebaseConfig);
+const db = getDatabase(app);
+
+// Player setup
+const COLORS = ['blue', 'red', 'green', 'orange'];
+const playerId = 'player_' + Math.floor(Math.random() * 10000);
+let playerColor = COLORS[Math.floor(Math.random() * COLORS.length)];
+
 // Map setup
 const map = L.map('map').setView([0, 0], 18);
-
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
   attribution: '© OpenStreetMap contributors'
 }).addTo(map);
 
-// Player marker
-let marker = null;
+// Player markers and paths
+let markers = {};
+let polylines = {};
 let pathCoords = [];
-let polyline = L.polyline([], { color: 'blue' }).addTo(map);
 
 // Grid settings
-const GRID_SIZE = 0.0001; // size of each cell in degrees (~10 meters)
+const GRID_SIZE = 0.0001;
 let capturedCells = {};
 let score = 0;
 
-// Score display
 const scoreDiv = document.getElementById('score');
+const playerInfoDiv = document.getElementById('playerInfo');
+playerInfoDiv.innerText = `You are: ${playerId} (${playerColor})`;
+playerInfoDiv.style.background = playerColor;
 
-// Convert lat/lng to grid cell key
 function getCellKey(lat, lng) {
   const row = Math.floor(lat / GRID_SIZE);
   const col = Math.floor(lng / GRID_SIZE);
   return `${row}_${col}`;
 }
 
-// Get cell bounds from key
 function getCellBounds(key) {
   const [row, col] = key.split('_').map(Number);
   const lat1 = row * GRID_SIZE;
@@ -35,51 +57,75 @@ function getCellBounds(key) {
   return [[lat1, lng1], [lat2, lng2]];
 }
 
-// Capture a cell
-function captureCell(lat, lng) {
-  const key = getCellKey(lat, lng);
+// Listen for all players territory
+onValue(ref(db, 'cells'), (snapshot) => {
+  const data = snapshot.val();
+  if (!data) return;
+  Object.entries(data).forEach(([key, cell]) => {
+    if (!capturedCells[key]) {
+      const bounds = getCellBounds(key);
+      const rect = L.rectangle(bounds, {
+        color: cell.color,
+        fillColor: cell.color,
+        fillOpacity: 0.4,
+        weight: 1
+      }).addTo(map);
+      capturedCells[key] = rect;
+    }
+  });
+});
 
-  if (!capturedCells[key]) {
-    const bounds = getCellBounds(key);
-    const rect = L.rectangle(bounds, {
-      color: 'blue',
-      fillColor: 'blue',
-      fillOpacity: 0.4,
-      weight: 1
-    }).addTo(map);
+// Listen for all players positions
+onValue(ref(db, 'players'), (snapshot) => {
+  const data = snapshot.val();
+  if (!data) return;
+  Object.entries(data).forEach(([id, player]) => {
+    if (id === playerId) return;
+    if (!markers[id]) {
+      markers[id] = L.marker([player.lat, player.lng]).addTo(map);
+      polylines[id] = L.polyline([], { color: player.color }).addTo(map);
+    } else {
+      markers[id].setLatLng([player.lat, player.lng]);
+    }
+  });
+});
 
-    capturedCells[key] = rect;
-    score++;
-    scoreDiv.innerText = `Score: ${score} cells`;
-  }
-}
-
-// Watch GPS position
+// Watch own GPS
 navigator.geolocation.watchPosition(
   (position) => {
-    const { latitude, longitude, accuracy } = position.coords;
+    const { latitude, longitude } = position.coords;
 
-    // Center map on first load
-    if (!marker) {
+    if (!markers[playerId]) {
       map.setView([latitude, longitude], 18);
-      marker = L.marker([latitude, longitude]).addTo(map);
+      markers[playerId] = L.marker([latitude, longitude]).addTo(map);
+      polylines[playerId] = L.polyline([], { color: playerColor }).addTo(map);
     } else {
-      marker.setLatLng([latitude, longitude]);
+      markers[playerId].setLatLng([latitude, longitude]);
     }
 
-    // Draw path
     pathCoords.push([latitude, longitude]);
-    polyline.setLatLngs(pathCoords);
+    polylines[playerId].setLatLngs(pathCoords);
 
-    // Capture grid cell
-    captureCell(latitude, longitude);
+    // Update position in Firebase
+    set(ref(db, `players/${playerId}`), {
+      lat: latitude,
+      lng: longitude,
+      color: playerColor
+    });
+
+    // Capture cell
+    const key = getCellKey(latitude, longitude);
+    if (!capturedCells[key]) {
+      set(ref(db, `cells/${key}`), {
+        color: playerColor,
+        owner: playerId
+      });
+      score++;
+      scoreDiv.innerText = `Score: ${score} cells`;
+    }
   },
-  (error) => {
-    alert('Location error: ' + error.message);
-  },
-  {
-    enableHighAccuracy: true,
-    maximumAge: 0,
-    timeout: 10000
-  }
+  (error) => { alert('Location error: ' + error.message); },
+  { enableHighAccuracy: true, maximumAge: 0, timeout: 10000 }
 );
+
+
