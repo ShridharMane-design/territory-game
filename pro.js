@@ -14,7 +14,6 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const db = getDatabase(app);
 
-// Player setup
 const playerId = localStorage.getItem('playerId') || 'player_' + Math.floor(Math.random() * 10000);
 localStorage.setItem('playerId', playerId);
 
@@ -25,7 +24,6 @@ let playerColor = COLORS[colorIndex];
 const playerRef = ref(db, `players/${playerId}`);
 onDisconnect(playerRef).remove();
 
-// Map setup
 const map = L.map('map').setView([0, 0], 18);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
   attribution: '© OpenStreetMap contributors'
@@ -69,6 +67,21 @@ function getDistance(lat1, lng1, lat2, lng2) {
     Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
     Math.sin(dLng/2) * Math.sin(dLng/2);
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+
+// ─── Point in Polygon ──────────────────────────
+
+function isPointInPolygon(lat, lng, polygon) {
+  let inside = false;
+  const n = polygon.length;
+  for (let i = 0, j = n - 1; i < n; j = i++) {
+    const xi = polygon[i][0], yi = polygon[i][1];
+    const xj = polygon[j][0], yj = polygon[j][1];
+    const intersect = ((yi > lng) !== (yj > lng)) &&
+      (lat < (xj - xi) * (lng - yi) / (yj - yi) + xi);
+    if (intersect) inside = !inside;
+  }
+  return inside;
 }
 
 // ─── Self Intersection Detection ──────────────────────────
@@ -140,75 +153,76 @@ function updateLeaderboard() {
   });
 }
 
-// ─── Interpolate cells between two GPS points ──────────────────────────
+// ─── Polygon Fill ──────────────────────────
 
-function interpolateCells(lat1, lng1, lat2, lng2) {
-  const keys = new Set();
-  const dist = getDistance(lat1, lng1, lat2, lng2);
-  const steps = Math.max(Math.ceil(dist / (GRID_SIZE * 111000)), 1);
-  for (let i = 0; i <= steps; i++) {
-    const t = i / steps;
-    const lat = lat1 + (lat2 - lat1) * t;
-    const lng = lng1 + (lng2 - lng1) * t;
-    keys.add(getCellKey(lat, lng));
-  }
-  return keys;
-}
-
-// ─── Trail Based Loop Fill ──────────────────────────
-
-function fillLoopTrail(loopPath) {
+function fillEnclosedArea(loopPath) {
   if (loopPath.length < 3) return;
 
-  const allCells = new Set();
+  const closedPath = [...loopPath, loopPath[0]];
 
-  for (let i = 0; i < loopPath.length - 1; i++) {
-    const [lat1, lng1] = loopPath[i];
-    const [lat2, lng2] = loopPath[i + 1];
-    interpolateCells(lat1, lng1, lat2, lng2).forEach(k => allCells.add(k));
-  }
-
-  // Close the loop
-  interpolateCells(
-    loopPath[loopPath.length - 1][0],
-    loopPath[loopPath.length - 1][1],
-    loopPath[0][0],
-    loopPath[0][1]
-  ).forEach(k => allCells.add(k));
+  const lats = closedPath.map(p => p[0]);
+  const lngs = closedPath.map(p => p[1]);
+  const minLat = Math.min(...lats);
+  const maxLat = Math.max(...lats);
+  const minLng = Math.min(...lngs);
+  const maxLng = Math.max(...lngs);
 
   let captured = 0;
 
-  allCells.forEach(key => {
-    if (capturedCells[key]) {
-      if (capturedCells[key].options.fillColor !== playerColor) {
-        capturedCells[key].setStyle({
-          color: playerColor,
-          fillColor: playerColor,
-          fillOpacity: 0.5
-        });
-        captured++;
-      }
-    } else {
-      const bounds = getCellBounds(key);
-      const rect = L.rectangle(bounds, {
-        color: playerColor,
-        fillColor: playerColor,
-        fillOpacity: 0.5,
-        weight: 1
-      }).addTo(map);
-      capturedCells[key] = rect;
-      captured++;
-    }
+  for (let lat = minLat; lat <= maxLat; lat += GRID_SIZE) {
+    for (let lng = minLng; lng <= maxLng; lng += GRID_SIZE) {
+      const checks = [
+        [lat + GRID_SIZE * 0.5,  lng + GRID_SIZE * 0.5],
+        [lat + GRID_SIZE * 0.25, lng + GRID_SIZE * 0.25],
+        [lat + GRID_SIZE * 0.75, lng + GRID_SIZE * 0.25],
+        [lat + GRID_SIZE * 0.25, lng + GRID_SIZE * 0.75],
+        [lat + GRID_SIZE * 0.75, lng + GRID_SIZE * 0.75],
+      ];
 
-    set(ref(db, `cells/${key}`), {
-      color: playerColor,
-      owner: playerId
-    });
-  });
+      const anyInside = checks.some(([clat, clng]) =>
+        isPointInPolygon(clat, clng, closedPath)
+      );
+
+      if (anyInside) {
+        const key = getCellKey(lat, lng);
+
+        if (capturedCells[key]) {
+          if (capturedCells[key].options.fillColor !== playerColor) {
+            capturedCells[key].setStyle({
+              color: playerColor,
+              fillColor: playerColor,
+              fillOpacity: 0.5
+            });
+            captured++;
+          }
+        } else {
+          const bounds = getCellBounds(key);
+          const rect = L.rectangle(bounds, {
+            color: playerColor,
+            fillColor: playerColor,
+            fillOpacity: 0.5,
+            weight: 1
+          }).addTo(map);
+          capturedCells[key] = rect;
+          captured++;
+        }
+
+        set(ref(db, `cells/${key}`), {
+          color: playerColor,
+          owner: playerId
+        });
+      }
+    }
+  }
 
   score += captured;
   updateLeaderboard();
-  scoreDiv.innerText = `✅ Loop done! Final Score: ${score} cells`;
+
+  // Show loop done message then revert to score
+  scoreDiv.innerText = `✅ Loop done! +${captured} cells! Total: ${score}`;
+  setTimeout(() => {
+    scoreDiv.innerText = `Score: ${score} cells`;
+  }, 3000);
 }
 
 // ─── Firebase Listeners ──────────────────────────
@@ -222,8 +236,8 @@ onValue(ref(db, 'cells'), (snapshot) => {
       const wasMyCell = capturedCells[key].options.fillColor === playerColor;
       const nowEnemyCell = cell.color !== playerColor;
 
-      // Enemy stole my cell — increase their score in leaderboard
-      if (wasMyCell && nowEnemyCell && cell.owner) {
+      // Enemy stole my cell — increase their leaderboard score
+      if (wasMyCell && nowEnemyCell && cell.owner && cell.owner !== playerId) {
         get(ref(db, `leaderboard/${cell.owner}`)).then(snap => {
           const current = snap.val();
           const currentScore = current ? current.score : 0;
@@ -297,7 +311,7 @@ navigator.geolocation.watchPosition(
       color: playerColor
     });
 
-    // Stop tracking after loop completed
+    // Stop after loop completed
     if (loopCompleted) return;
 
     trailCoords.push([latitude, longitude]);
@@ -309,7 +323,7 @@ navigator.geolocation.watchPosition(
       // Method 1 — Trail crosses itself
       const intersectIndex = detectSelfIntersection(trailCoords);
       if (intersectIndex >= 0) {
-        fillLoopTrail(trailCoords.slice(intersectIndex));
+        fillEnclosedArea(trailCoords.slice(intersectIndex));
         loopCompleted = true;
         return;
       }
@@ -320,7 +334,7 @@ navigator.geolocation.watchPosition(
         trailCoords[0][0], trailCoords[0][1]
       );
       if (distToStart < 15) {
-        fillLoopTrail(trailCoords);
+        fillEnclosedArea(trailCoords);
         loopCompleted = true;
         return;
       }
