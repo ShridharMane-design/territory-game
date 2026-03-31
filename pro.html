@@ -1,14 +1,94 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
-  <link rel="stylesheet" href="pro.css">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>TERRITORY WAR</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Share+Tech+Mono&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="pro.css" />
 </head>
 <body>
-  <div id="score">Score: 0 cells</div>
-  <div id="playerInfo"></div>
+
   <div id="map"></div>
-  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+  <div id="scanlines"></div>
+
+  <div id="hud">
+
+    <!-- TOP BAR -->
+    <header id="top-bar">
+      <div id="game-logo">
+        <svg width="26" height="26" viewBox="0 0 24 24" fill="none">
+          <polygon points="12,2 22,8 22,16 12,22 2,16 2,8" stroke="#00c8ff" stroke-width="1.5"/>
+          <polygon points="12,6 18,9.5 18,14.5 12,18 6,14.5 6,9.5" fill="#00c8ff" opacity="0.25"/>
+          <circle cx="12" cy="12" r="2.2" fill="#00c8ff"/>
+        </svg>
+        <span class="logo-text">TERRITORY<em>WAR</em></span>
+      </div>
+
+      <div id="player-badge">
+        <div id="badge-bar"></div>
+        <div id="badge-info">
+          <span id="badge-id">LOCATING…</span>
+          <span id="badge-status">
+            <span class="pip" id="status-pip"></span>
+            <span id="status-label">CONNECTING</span>
+          </span>
+        </div>
+      </div>
+
+      <div id="top-stats">
+        <div class="tstat">
+          <div class="tstat-val" id="session-time">00:00</div>
+          <div class="tstat-lbl">SESSION</div>
+        </div>
+        <div class="tstat">
+          <div class="tstat-val" id="live-player-count">0</div>
+          <div class="tstat-lbl">PLAYERS</div>
+        </div>
+      </div>
+    </header>
+
+    <!-- LEADERBOARD -->
+    <aside id="lb-panel">
+      <div id="lb-toggle" title="Toggle leaderboard">
+        <span id="lb-chevron">◀</span>
+      </div>
+      <div id="lb-body">
+        <div id="lb-heading">▣ LEADERBOARD</div>
+        <ul id="lb-list"><li class="lb-empty">Waiting for players…</li></ul>
+        <div id="lb-footer"><span id="lb-total">0 cells claimed</span></div>
+      </div>
+    </aside>
+
+    <!-- SCORE PANEL -->
+    <div id="score-panel">
+      <div id="score-label">CELLS CAPTURED</div>
+      <div id="score-number"><span id="score-val">0</span></div>
+      <div id="score-bar-track"><div id="score-bar-fill"></div></div>
+      <div id="mini-stats">
+        <div class="ms"><div class="ms-v" id="ms-rank">#–</div><div class="ms-l">RANK</div></div>
+        <div class="ms"><div class="ms-v" id="ms-pct">0%</div><div class="ms-l">MAP%</div></div>
+        <div class="ms"><div class="ms-v" id="ms-streak">0</div><div class="ms-l">STREAK</div></div>
+      </div>
+    </div>
+
+    <!-- GPS WIDGET -->
+    <div id="gps-widget">
+      <div id="gps-rings">
+        <div class="gr r1"></div>
+        <div class="gr r2"></div>
+        <div class="gr r3"></div>
+        <div class="gps-dot"></div>
+      </div>
+      <div id="gps-lbl">GPS</div>
+    </div>
+
+  </div>
+
+  <div id="popup-layer"></div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script type="module" src="pro.js"></script>
 </body>
 </html>
