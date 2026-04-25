@@ -52,8 +52,6 @@ let captureMultiplier = 1.0;
 let staminaLevel = 100;
 let lastCaptureTime = 0;
 const BASE_CAPTURE_COOLDOWN = 500;
-let esp32IP = null;
-let hasWristband = false;
 
 // ── DOM refs ─────────────────────────────────────────────
 const scoreValEl      = document.getElementById('score-val');
@@ -84,9 +82,6 @@ badgeBar.style.background = playerColor;
 badgeBar.style.boxShadow  = `0 0 10px ${playerColor}`;
 lbToggle.addEventListener('click', () => lbPanel.classList.toggle('collapsed'));
 
-// Hide BPM widget initially
-if (bpmWidget) bpmWidget.style.display = 'none';
-
 // ── Session timer ─────────────────────────────────────────
 setInterval(() => {
   const elapsed = Math.floor((Date.now() - sessionStart) / 1000);
@@ -95,52 +90,16 @@ setInterval(() => {
   sessionTimeEl.textContent = `${m}:${s}`;
 }, 1000);
 
-// ── Get ESP32 IP from Firebase then try to connect ───────
-onValue(ref(db, 'esp32'), (snapshot) => {
+// ── BPM from Firebase ─────────────────────────────────────
+onValue(ref(db, 'bpm'), (snapshot) => {
   const data = snapshot.val();
-  if (!data || !data.ip) return;
-  esp32IP = data.ip;
-  // Try to reach ESP32 local server
-  tryConnectESP32(esp32IP);
+  if (!data) return;
+  currentBPM     = data.current || 0;
+  fingerDetected = data.finger === 1;
+  if (fingerDetected) lastFingerTime = Date.now();
+  updateBPMWidget();
+  updateStamina();
 });
-
-// ── Try to fetch BPM from ESP32 local server ─────────────
-async function tryConnectESP32(ip) {
-  try {
-    const res = await fetch(`http://${ip}/bpm`, { signal: AbortSignal.timeout(2000) });
-    if (res.ok) {
-      // Success — phone is on same hotspot as ESP32
-      hasWristband = true;
-      if (bpmWidget) bpmWidget.style.display = 'block';
-      console.log('✅ ESP32 connected! BPM widget enabled.');
-      startBPMFetch(ip);
-    }
-  } catch (e) {
-    // Failed — phone is on different network
-    hasWristband = false;
-    if (bpmWidget) bpmWidget.style.display = 'none';
-    console.log('❌ ESP32 not reachable. BPM widget hidden.');
-  }
-}
-
-// ── Fetch BPM from ESP32 every 2 seconds ─────────────────
-function startBPMFetch(ip) {
-  setInterval(async () => {
-    try {
-      const res = await fetch(`http://${ip}/bpm`, { signal: AbortSignal.timeout(2000) });
-      const data = await res.json();
-      currentBPM     = data.bpm || 0;
-      fingerDetected = data.finger === true;
-      if (fingerDetected) lastFingerTime = Date.now();
-      updateBPMWidget();
-      updateStamina();
-    } catch (e) {
-      // ESP32 disconnected
-      hasWristband = false;
-      if (bpmWidget) bpmWidget.style.display = 'none';
-    }
-  }, 2000);
-}
 
 // ── BPM Widget ───────────────────────────────────────────
 function updateBPMWidget() {
@@ -249,26 +208,15 @@ function updateScoreUI() {
 
 // ── Cell Capture with Stamina ─────────────────────────────
 function captureCell(key) {
-  // If no wristband — capture normally without stamina penalty
-  if (!hasWristband) {
-    captureNormal(key);
-    return;
-  }
-
   if (captureMultiplier === 0) {
     spawnPopup('❌ BLOCKED!', false, true);
     return;
   }
-
   const cooldown = BASE_CAPTURE_COOLDOWN / captureMultiplier;
   const now = Date.now();
   if (now - lastCaptureTime < cooldown) return;
   lastCaptureTime = now;
 
-  captureNormal(key);
-}
-
-function captureNormal(key) {
   const isNew   = !capturedCells[key];
   const isSteal = !isNew && capturedCells[key]._ownerColor !== playerColor;
 
@@ -281,7 +229,7 @@ function captureNormal(key) {
     rect._ownerColor = playerColor;
     capturedCells[key] = rect;
     score++; streak++;
-    spawnPopup(hasWristband && captureMultiplier >= 1.5 ? '⚡ +1 BOOST!' : '+1');
+    spawnPopup(captureMultiplier >= 1.5 ? '⚡ +1 BOOST!' : '+1');
   } else if (isSteal) {
     capturedCells[key].setStyle({ color: playerColor, fillColor: playerColor });
     capturedCells[key]._ownerColor = playerColor;
@@ -406,7 +354,6 @@ onValue(ref(db, 'players'), (snapshot) => {
 
 // ── GPS ───────────────────────────────────────────────────
 let gpsActive = false;
-
 navigator.geolocation.watchPosition(
   (position) => {
     const { latitude: lat, longitude: lng } = position.coords;
