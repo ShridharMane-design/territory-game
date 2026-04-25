@@ -52,6 +52,8 @@ let captureMultiplier = 1.0;
 let staminaLevel = 100;
 let lastCaptureTime = 0;
 const BASE_CAPTURE_COOLDOWN = 500;
+let esp32IP = null;
+let hasWristband = false;
 
 // ── DOM refs ─────────────────────────────────────────────
 const scoreValEl      = document.getElementById('score-val');
@@ -82,6 +84,9 @@ badgeBar.style.background = playerColor;
 badgeBar.style.boxShadow  = `0 0 10px ${playerColor}`;
 lbToggle.addEventListener('click', () => lbPanel.classList.toggle('collapsed'));
 
+// Hide BPM widget initially
+if (bpmWidget) bpmWidget.style.display = 'none';
+
 // ── Session timer ─────────────────────────────────────────
 setInterval(() => {
   const elapsed = Math.floor((Date.now() - sessionStart) / 1000);
@@ -90,16 +95,52 @@ setInterval(() => {
   sessionTimeEl.textContent = `${m}:${s}`;
 }, 1000);
 
-// ── BPM from Firebase ─────────────────────────────────────
-onValue(ref(db, 'bpm'), (snapshot) => {
+// ── Get ESP32 IP from Firebase then try to connect ───────
+onValue(ref(db, 'esp32'), (snapshot) => {
   const data = snapshot.val();
-  if (!data) return;
-  currentBPM     = data.current || 0;
-  fingerDetected = data.finger === 1;
-  if (fingerDetected) lastFingerTime = Date.now();
-  updateBPMWidget();
-  updateStamina();
+  if (!data || !data.ip) return;
+  esp32IP = data.ip;
+  // Try to reach ESP32 local server
+  tryConnectESP32(esp32IP);
 });
+
+// ── Try to fetch BPM from ESP32 local server ─────────────
+async function tryConnectESP32(ip) {
+  try {
+    const res = await fetch(`http://${ip}/bpm`, { signal: AbortSignal.timeout(2000) });
+    if (res.ok) {
+      // Success — phone is on same hotspot as ESP32
+      hasWristband = true;
+      if (bpmWidget) bpmWidget.style.display = 'block';
+      console.log('✅ ESP32 connected! BPM widget enabled.');
+      startBPMFetch(ip);
+    }
+  } catch (e) {
+    // Failed — phone is on different network
+    hasWristband = false;
+    if (bpmWidget) bpmWidget.style.display = 'none';
+    console.log('❌ ESP32 not reachable. BPM widget hidden.');
+  }
+}
+
+// ── Fetch BPM from ESP32 every 2 seconds ─────────────────
+function startBPMFetch(ip) {
+  setInterval(async () => {
+    try {
+      const res = await fetch(`http://${ip}/bpm`, { signal: AbortSignal.timeout(2000) });
+      const data = await res.json();
+      currentBPM     = data.bpm || 0;
+      fingerDetected = data.finger === true;
+      if (fingerDetected) lastFingerTime = Date.now();
+      updateBPMWidget();
+      updateStamina();
+    } catch (e) {
+      // ESP32 disconnected
+      hasWristband = false;
+      if (bpmWidget) bpmWidget.style.display = 'none';
+    }
+  }, 2000);
+}
 
 // ── BPM Widget ───────────────────────────────────────────
 function updateBPMWidget() {
@@ -135,28 +176,21 @@ function updateStamina() {
 
   if (!fingerDetected) {
     if (noSensorDuration > 60) {
-      captureMultiplier = 0;
-      staminaLevel = 0;
+      captureMultiplier = 0; staminaLevel = 0;
     } else if (noSensorDuration > 30) {
-      captureMultiplier = 0.2;
-      staminaLevel = 20;
+      captureMultiplier = 0.2; staminaLevel = 20;
     } else {
-      captureMultiplier = 1.0;
-      staminaLevel = 100;
+      captureMultiplier = 1.0; staminaLevel = 100;
     }
   } else {
     if (currentBPM >= 80 && currentBPM < 100) {
-      captureMultiplier = 1.5;
-      staminaLevel = 100;
+      captureMultiplier = 1.5; staminaLevel = 100;
     } else if (currentBPM >= 100) {
-      captureMultiplier = 0.5;
-      staminaLevel = 30;
+      captureMultiplier = 0.5; staminaLevel = 30;
     } else if (currentBPM < 60 && currentBPM > 0) {
-      captureMultiplier = 0.7;
-      staminaLevel = 60;
+      captureMultiplier = 0.7; staminaLevel = 60;
     } else {
-      captureMultiplier = 1.0;
-      staminaLevel = 80;
+      captureMultiplier = 1.0; staminaLevel = 80;
     }
   }
 
@@ -166,7 +200,6 @@ function updateStamina() {
       staminaLevel > 70 ? '#00ff88' :
       staminaLevel > 30 ? '#ff9100' : '#ff3232';
   }
-
   if (staminaLabel) {
     staminaLabel.textContent =
       captureMultiplier === 0  ? 'BLOCKED' :
@@ -185,18 +218,14 @@ function getCellBounds(key) {
   const [row, col] = key.split('_').map(Number);
   return [[row * GRID_SIZE, col * GRID_SIZE], [(row+1)*GRID_SIZE, (col+1)*GRID_SIZE]];
 }
-
 function animateScore(from, to) {
-  const diff = to - from;
-  const steps = 20;
-  let i = 0;
+  const diff = to - from; const steps = 20; let i = 0;
   const interval = setInterval(() => {
     i++;
     scoreValEl.textContent = Math.round(from + (diff * i / steps));
     if (i >= steps) { clearInterval(interval); scoreValEl.textContent = to; }
   }, 18);
 }
-
 function spawnPopup(text, isSteal = false, isBlocked = false) {
   const el = document.createElement('div');
   el.className = 'score-popup' + (isSteal ? ' steal' : '') + (isBlocked ? ' blocked' : '');
@@ -206,13 +235,11 @@ function spawnPopup(text, isSteal = false, isBlocked = false) {
   popupLayer.appendChild(el);
   setTimeout(() => el.remove(), 1300);
 }
-
 function getMaxScore() {
   let max = 1;
   lbData.forEach(p => { if (p.score > max) max = p.score; });
   return max;
 }
-
 function updateScoreUI() {
   animateScore(parseInt(scoreValEl.textContent) || 0, score);
   const pct = getMaxScore() > 0 ? Math.min(100, (score / getMaxScore()) * 100) : 0;
@@ -222,6 +249,12 @@ function updateScoreUI() {
 
 // ── Cell Capture with Stamina ─────────────────────────────
 function captureCell(key) {
+  // If no wristband — capture normally without stamina penalty
+  if (!hasWristband) {
+    captureNormal(key);
+    return;
+  }
+
   if (captureMultiplier === 0) {
     spawnPopup('❌ BLOCKED!', false, true);
     return;
@@ -232,6 +265,10 @@ function captureCell(key) {
   if (now - lastCaptureTime < cooldown) return;
   lastCaptureTime = now;
 
+  captureNormal(key);
+}
+
+function captureNormal(key) {
   const isNew   = !capturedCells[key];
   const isSteal = !isNew && capturedCells[key]._ownerColor !== playerColor;
 
@@ -243,14 +280,12 @@ function captureCell(key) {
     }).addTo(map);
     rect._ownerColor = playerColor;
     capturedCells[key] = rect;
-    score++;
-    streak++;
-    spawnPopup(captureMultiplier >= 1.5 ? '⚡ +1 BOOST!' : '+1');
+    score++; streak++;
+    spawnPopup(hasWristband && captureMultiplier >= 1.5 ? '⚡ +1 BOOST!' : '+1');
   } else if (isSteal) {
     capturedCells[key].setStyle({ color: playerColor, fillColor: playerColor });
     capturedCells[key]._ownerColor = playerColor;
-    score++;
-    streak = 1;
+    score++; streak = 1;
     spawnPopup('⚔ STOLEN!', true);
   } else {
     if (key !== lastCellKey) streak++;
@@ -270,20 +305,16 @@ function renderLeaderboard() {
   const totalCells = lbData.reduce((acc, p) => acc + p.score, 0);
   lbTotal.textContent = `${totalCells} cells claimed`;
   livePlayerCount.textContent = lbData.length;
-
   const myRank = lbData.findIndex(p => p.id === playerId) + 1;
   msRank.textContent = myRank > 0 ? `#${myRank}` : '#–';
-
   const myEntry = lbData.find(p => p.id === playerId);
   if (myEntry && totalCells > 0) {
     msPct.textContent = Math.round((myEntry.score / totalCells) * 100) + '%';
   }
-
   if (lbData.length === 0) {
     lbList.innerHTML = '<li class="lb-empty">No players yet…</li>';
     return;
   }
-
   lbList.innerHTML = '';
   lbData.forEach((player, i) => {
     const rank = i + 1;
@@ -331,7 +362,6 @@ function getTimeAgo(ts) {
   const s = Math.floor((Date.now() - ts) / 1000);
   return s < 60 ? `${s}s ago` : `${Math.floor(s/60)}m ago`;
 }
-
 function updateMarkerStatus(id, lastSeen) {
   if (!markers[id]) return;
   const running = (Date.now() - lastSeen) / 1000 < 10;
@@ -342,7 +372,6 @@ function updateMarkerStatus(id, lastSeen) {
     { permanent: true, direction: 'top', className: 'player-tooltip' }
   ).openTooltip();
 }
-
 setInterval(() => {
   Object.keys(playerLastSeen).forEach(id => {
     if (id !== playerId) updateMarkerStatus(id, playerLastSeen[id]);
@@ -382,7 +411,6 @@ navigator.geolocation.watchPosition(
   (position) => {
     const { latitude: lat, longitude: lng } = position.coords;
     const key = getCellKey(lat, lng);
-
     if (!gpsActive) {
       gpsActive = true;
       map.setView([lat, lng], 18);
@@ -394,7 +422,6 @@ navigator.geolocation.watchPosition(
       markers[playerId].setLatLng([lat, lng]);
       map.panTo([lat, lng]);
     }
-
     set(ref(db, `players/${playerId}`), { lat, lng, color: playerColor, lastSeen: Date.now() });
     trailCoords.push([lat, lng]);
     polylines[playerId].setLatLngs(trailCoords);
